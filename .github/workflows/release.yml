@@ -69,9 +69,99 @@ jobs:
         name: ${{ matrix.name }}
         path: ${{ matrix.name }}
 
+  build-deb:
+    name: Build Debian package
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+
+    - name: Build Linux AMD64 binary
+      env:
+        CGO_ENABLED: 0
+        GOOS: linux
+        GOARCH: amd64
+      run: |
+        go build -ldflags="-s -w" -tags="noui,noweb" -o filetool
+
+    - name: Get version info
+      id: version
+      run: |
+        VERSION="1.0.$(date +%Y%m%d.%H%M)"
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Version: $VERSION"
+
+    - name: Create Debian package structure
+      run: |
+        mkdir -p deb-package/DEBIAN
+        mkdir -p deb-package/usr/bin
+        mkdir -p deb-package/usr/share/doc/filetool
+        mkdir -p deb-package/usr/share/man/man1
+        
+        # Copy binary
+        cp filetool deb-package/usr/bin/
+        chmod 755 deb-package/usr/bin/filetool
+        
+        # Create control file
+        cat > deb-package/DEBIAN/control << EOF
+        Package: filetool
+        Version: ${{ steps.version.outputs.version }}
+        Section: utils
+        Priority: optional
+        Architecture: amd64
+        Maintainer: aeggerd <maintainer@example.com>
+        Description: Secure file encryption and backup CLI tool
+         A secure, fast, and user-friendly command-line tool for file encryption,
+         decryption, and backup operations. Built with Go, featuring AES-256
+         encryption with individual file IVs, interactive decryption, and
+         cross-platform support.
+        Homepage: https://github.com/aeggerd/filetool
+        EOF
+        
+        # Create copyright file
+        cat > deb-package/usr/share/doc/filetool/copyright << EOF
+        Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+        Upstream-Name: filetool
+        Source: https://github.com/aeggerd/filetool
+        
+        Files: *
+        Copyright: $(date +%Y) aeggerd
+        License: MIT
+        EOF
+        
+        # Create changelog
+        cat > deb-package/usr/share/doc/filetool/changelog.Debian << EOF
+        filetool (${{ steps.version.outputs.version }}) unstable; urgency=low
+        
+          * Automated build from GitHub Actions
+          * AES-256 encryption with individual file IVs
+          * Interactive decryption with file selection
+          * Cross-platform support
+        
+         -- aeggerd <maintainer@example.com>  $(date -R)
+        EOF
+        
+        # Compress changelog
+        gzip -9 deb-package/usr/share/doc/filetool/changelog.Debian
+
+    - name: Build Debian package
+      run: |
+        dpkg-deb --build deb-package filetool_${{ steps.version.outputs.version }}_amd64.deb
+
+    - name: Upload Debian package artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: filetool-deb
+        path: filetool_${{ steps.version.outputs.version }}_amd64.deb
+
   release:
     name: Create release
-    needs: build
+    needs: [build, build-deb]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
@@ -87,6 +177,8 @@ jobs:
         mkdir -p release
         # Copy artifacts (they're in subdirectories)
         find ./artifacts -name "filetool-*" -type f -exec cp {} ./release/ \;
+        # Copy Debian package
+        find ./artifacts -name "*.deb" -type f -exec cp {} ./release/ \;
         cd release
         # Generate checksums
         sha256sum * > SHA256SUMS
@@ -121,6 +213,7 @@ jobs:
           - `filetool-windows-amd64.exe` - Windows x86_64
           - `filetool-macos-amd64` - macOS Intel
           - `filetool-macos-arm64` - macOS Apple Silicon
+          - `filetool_*_amd64.deb` - Debian/Ubuntu package
           
           ### Usage
           ```bash
@@ -148,4 +241,5 @@ jobs:
           release/filetool-windows-amd64.exe
           release/filetool-macos-amd64
           release/filetool-macos-arm64
+          release/*.deb
           release/SHA256SUMS
